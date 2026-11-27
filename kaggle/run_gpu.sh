@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # GPU stage, run inside the Kaggle notebook (or any GPU machine).
+#   bash kaggle/run_gpu.sh generate 0    # GPU only: diffusion (paper + start sweep), GAN, paper-setup diffusion; no evaluation
 #   bash kaggle/run_gpu.sh core 0        # diffusion (paper + start sweep), GAN, SMOTE/ADASYN/noise, evaluation
 #   bash kaggle/run_gpu.sh wgangp 0      # WGAN-GP (slow, about 5 h) + its evaluation
 #   bash kaggle/run_gpu.sh replicate 0   # the paper's setup (per-family Word2Vec, generators see all data)
@@ -9,6 +10,17 @@ PLAN=${1:-core}
 SEED=${2:-0}
 
 case "$PLAN" in
+generate)
+  E=work/emb/global_train_s${SEED}.npz
+  python scripts/generate.py ${GEN_ARGS:-} --emb "$E" --method diffusion --train-tmax 500  --start-t 500
+  python scripts/generate.py ${GEN_ARGS:-} --emb "$E" --method diffusion --train-tmax 1000 --start-t 250 500 750 1000
+  python scripts/generate.py ${GEN_ARGS:-} --emb "$E" --method gan
+  python scripts/generate.py ${GEN_ARGS:-} --emb work/emb/per_family_all_s${SEED}.npz --method diffusion \
+      --train-tmax 500 --start-t 500 --fit all
+  (cd work && zip -qr /kaggle/working/synth.zip synth) || true
+  echo "done: generate seed $SEED -> synth.zip"
+  exit 0
+  ;;
 core)
   E=work/emb/global_train_s${SEED}.npz
   S=work/synth/global_train_s${SEED}

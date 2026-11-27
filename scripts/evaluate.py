@@ -12,6 +12,8 @@ import os
 import sys
 import time
 
+import joblib
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from opdiff import evaluate as ev  # noqa: E402
 from opdiff.io import load_embeddings, load_synthetic  # noqa: E402
@@ -23,6 +25,7 @@ ap.add_argument("--synth", nargs="*", default=[])
 ap.add_argument("--out", default="work/results")
 ap.add_argument("--clfs", nargs="+", default=["rf", "svm", "mlp"])
 ap.add_argument("--skip-real-only", action="store_true")
+ap.add_argument("--cache", default="work/cache", help="real-data classifiers are saved here and reused")
 a = ap.parse_args()
 
 D = load_embeddings(a.emb)
@@ -38,9 +41,20 @@ def dump(name, obj):
         json.dump(obj, fh, indent=1)
 
 
+os.makedirs(a.cache, exist_ok=True)
+models, t0 = {}, time.time()
+for c in sorted(set(a.clfs) | {"rf"}):
+    path = os.path.join(a.cache, f"{stem}_{c}.joblib")
+    if os.path.exists(path):
+        models[c] = joblib.load(path)
+    else:
+        models[c] = ev.fit(c, D["Xtr"], D["ytr"], seed)
+        joblib.dump(models[c], path)
+print(f"real-data classifiers ready ({time.time() - t0:.0f}s)", flush=True)
+use = {c: models[c] for c in a.clfs}
+
 if not a.skip_real_only:
-    t0 = time.time()
-    res = {"emb": stem, "seed": seed, **sizes, "real_only": ev.real_only(D, a.clfs, seed)}
+    res = {"emb": stem, "seed": seed, **sizes, "real_only": ev.real_only(D, use)}
     dump("real_only", res)
     print(f"real-only ({time.time() - t0:.0f}s):",
           {c: round(v["f1"], 4) for c, v in res["real_only"].items()}, flush=True)
@@ -52,8 +66,8 @@ for path in a.synth:
     res = {"emb": stem, "seed": seed, "synthetic": name, "meta": meta, **sizes,
            "real_vs_synthetic": ev.real_vs_synthetic(D, Xs, ys, seed),
            "tstr": ev.tstr(D, Xs, ys, a.clfs, seed),
-           "trts": ev.trts(D, Xs, ys, a.clfs, seed),
-           "threshold_augmentation": ev.threshold_augmentation(D, Xs, ys, seed),
+           "trts": ev.trts(Xs, ys, use),
+           "threshold_augmentation": ev.threshold_augmentation(D, Xs, ys, seed, base=models["rf"]),
            "cosine": ev.cosine_similarity(D, Xs, ys, seed),
            "novelty": novelty(D, Xs, ys)}
     dump(name, res)

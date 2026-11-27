@@ -77,7 +77,7 @@ add `--max-tokens 5000` to learn from fewer opcodes per file.
 
 Zip the `work/emb` folder and upload it as a new private Kaggle dataset named `opdiff-emb`.
 
-### 6. Kaggle: run the GPU stage
+### 6. Kaggle: generate synthetic data (GPU)
 
 Create a notebook with GPU (T4 or P100), Internet on, and the `opdiff-emb` dataset added. Run:
 
@@ -85,18 +85,34 @@ Create a notebook with GPU (T4 or P100), Internet on, and the `opdiff-emb` datas
 !git clone https://github.com/<your-user>/opcode-diffusion.git
 %cd opcode-diffusion
 !mkdir -p work/emb && find /kaggle/input -name "*.npz" -exec cp {} work/emb/ \;
-# smoke test, a few minutes. Then delete the test output: !rm -rf work/synth work/results work/summary
-!GEN_ARGS="--epochs 1 --n-per-family 50 --families 3" bash kaggle/run_gpu.sh core 0
-# real runs
-!bash kaggle/run_gpu.sh core 0         # rough guide: 3 to 5 h
-!bash kaggle/run_gpu.sh replicate 0    # rough guide: 1 to 2 h
-!bash kaggle/run_gpu.sh wgangp 0       # rough guide: 5 h, optional
-!cd work && zip -r /kaggle/working/results.zip results summary figures
+!bash kaggle/run_gpu.sh generate 0     # diffusion (paper + start sweep), GAN, paper-setup diffusion
+!bash kaggle/run_gpu.sh wgangp 0       # optional, about 5 h
 ```
 
 Use "Save Version > Save & Run All" so the run continues after you close the browser
-(Kaggle sessions stop after 12 hours; split the plans across versions if needed).
-Download `results.zip` from the notebook's Output tab.
+(Kaggle sessions stop after 12 hours). Download `synth.zip` from the version's Output tab.
+A smoke test first is a good idea: `GEN_ARGS="--epochs 1 --n-per-family 50 --families 3"` in
+front of the `bash` command.
+
+### 7. Evaluate (CPU, any machine)
+
+Evaluation needs no GPU, so it can run on a laptop or a CPU notebook. Put the embeddings in
+`work/emb/` and unzip `synth.zip` into `work/`, then:
+
+```bash
+for e in global_train_s0 per_family_all_s0 global_train_s1 global_train_s2; do
+  python scripts/evaluate.py --emb work/emb/$e.npz                     # real-only baselines
+done
+python scripts/generate.py --emb work/emb/global_train_s0.npz --method smote   # also adasyn, noise
+python scripts/evaluate.py --emb work/emb/global_train_s0.npz --skip-real-only \
+    --synth work/synth/global_train_s0/*.npz
+python scripts/evaluate.py --emb work/emb/per_family_all_s0.npz --skip-real-only \
+    --synth work/synth/per_family_all_s0/*.npz
+python scripts/summarize.py
+```
+
+Classifiers trained on real data are saved in `work/cache/` and reused, so each one is trained
+once per embedding.
 
 ## What each command produces
 
@@ -122,7 +138,7 @@ Download `results.zip` from the notebook's Output tab.
 | Diffusion | 1D U-Net, base 32, mults (1,2,4,8), attention, dropout 0.01, AdamW 5e-5; T = 1000 linear | paper Table 6 |
 | Training | latent 100, batch 64 (GAN, WGAN-GP) / 128 (diffusion), 200 epochs per family | my choice |
 | Synthetic | 2,000 vectors per family | my choice |
-| Classifiers | RF (200 trees), SVM (RBF, 30k subsample), MLP (256-128) | paper (types) |
+| Classifiers | RF (200 trees); SVM (RBF, C = 10,000, chosen on the validation split); MLP (256-128, 300 iterations) | paper (types); my choice (settings) |
 | Threshold | t from 0.90 to 0.99, chosen on validation; t = 0.95 also reported | paper (range) |
 
 Two implementation notes. Keras BatchNorm momentum 0.8 is PyTorch momentum 0.2. The U-Net pads the

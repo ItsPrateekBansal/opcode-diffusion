@@ -22,18 +22,22 @@ def scores(y_true, y_pred):
             "f1_weighted": float(f1_score(y_true, y_pred, average="weighted", zero_division=0))}
 
 
+SVM_C = 1e4       # chosen on the validation split of seed 0 (C = 1, 10, ..., 1e5 tried)
+MLP_ITER = 300    # as in the baseline report
+
+
 def make_clf(name, seed):
     if name == "rf":
         return RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=seed)
     if name == "svm":
-        return SVC(kernel="rbf", C=1.0, gamma="scale", random_state=seed)
+        return SVC(kernel="rbf", C=SVM_C, gamma="scale", random_state=seed)
     if name == "mlp":
-        return MLPClassifier(hidden_layer_sizes=(256, 128), max_iter=1000, random_state=seed)
+        return MLPClassifier(hidden_layer_sizes=(256, 128), max_iter=MLP_ITER, random_state=seed)
     raise ValueError(name)
 
 
-def fit(name, X, y, seed, svm_max=30000):
-    if name == "svm" and len(X) > svm_max:  # stratified subsample, as in the baseline
+def fit(name, X, y, seed, svm_max=0):
+    if name == "svm" and svm_max and len(X) > svm_max:  # optional stratified subsample
         rng = np.random.default_rng(seed)
         keep = np.concatenate([rng.permutation(np.where(y == c)[0])[:max(1, int(svm_max * (y == c).mean()))]
                                for c in np.unique(y)])
@@ -41,16 +45,21 @@ def fit(name, X, y, seed, svm_max=30000):
     return make_clf(name, seed).fit(X, y)
 
 
-def real_only(D, clfs, seed):
-    return {c: scores(D["yte"], fit(c, D["Xtr"], D["ytr"], seed).predict(D["Xte"])) for c in clfs}
+def real_models(D, clfs, seed):
+    """Classifiers trained on the real training split; trained once, reused below."""
+    return {c: fit(c, D["Xtr"], D["ytr"], seed) for c in clfs}
+
+
+def real_only(D, models):
+    return {c: scores(D["yte"], m.predict(D["Xte"])) for c, m in models.items()}
 
 
 def tstr(D, Xs, ys, clfs, seed):
     return {c: scores(D["yte"], fit(c, Xs, ys, seed).predict(D["Xte"])) for c in clfs}
 
 
-def trts(D, Xs, ys, clfs, seed):
-    return {c: scores(ys, fit(c, D["Xtr"], D["ytr"], seed).predict(Xs)) for c in clfs}
+def trts(Xs, ys, models):
+    return {c: scores(ys, m.predict(Xs)) for c, m in models.items()}
 
 
 def real_vs_synthetic(D, Xs, ys, seed, n_max=2000):
@@ -76,12 +85,13 @@ def _per_class_f1(y, pred, classes):
     return dict(zip(classes, f1_score(y, pred, labels=classes, average=None, zero_division=0)))
 
 
-def threshold_augmentation(D, Xs, ys, seed, grid=(0.90, 0.91, 0.92, 0.93, 0.94, 0.95, 0.96, 0.97, 0.98, 0.99),
+def threshold_augmentation(D, Xs, ys, seed, base=None,
+                           grid=(0.90, 0.91, 0.92, 0.93, 0.94, 0.95, 0.96, 0.97, 0.98, 0.99),
                            min_unique=100, paper_t=0.95):
     """Add synthetic data for families whose validation F1 is below t, or that
     have fewer than `min_unique` unique training vectors. Pick t on validation."""
     classes = sorted(np.unique(D["ytr"]).tolist())
-    base = fit("rf", D["Xtr"], D["ytr"], seed)
+    base = base if base is not None else fit("rf", D["Xtr"], D["ytr"], seed)
     val_f1 = _per_class_f1(D["yva"], base.predict(D["Xva"]), classes)
     uniq = {c: len(np.unique(np.round(D["Xtr"][D["ytr"] == c], 6), axis=0)) for c in classes}
     res = {"baseline_test": scores(D["yte"], base.predict(D["Xte"])),
